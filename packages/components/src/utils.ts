@@ -1437,7 +1437,9 @@ export const executeJavaScriptCode = async (
     } = {}
 ): Promise<any> => {
     const { timeout = 300000, useSandbox = true, streamOutput, libraries = [], nodeVMOptions = {} } = options
-    const shouldUseSandbox = useSandbox && process.env.E2B_APIKEY
+    // Use local E2B Docker with dummy key
+    const e2bApiKey = process.env.E2B_APIKEY || 'local-dummy-key'
+    const shouldUseSandbox = useSandbox && e2bApiKey
     let timeoutMs = timeout
     if (process.env.SANDBOX_TIMEOUT) {
         timeoutMs = parseInt(process.env.SANDBOX_TIMEOUT, 10)
@@ -1498,7 +1500,13 @@ export const executeJavaScriptCode = async (
                 }
             }
 
-            const sbx = await Sandbox.create({ apiKey: process.env.E2B_APIKEY, timeoutMs })
+            // Create sandbox with local Docker configuration
+            const sbx = await Sandbox.create({ 
+                apiKey: e2bApiKey, 
+                timeoutMs,
+                domain: process.env.E2B_DOMAIN || 'localhost:49999',
+                debug: process.env.E2B_DEBUG === 'true' || true
+            })
 
             // Install libraries
             for (const library of libraries) {

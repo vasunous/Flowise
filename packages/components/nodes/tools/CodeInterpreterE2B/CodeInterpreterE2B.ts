@@ -71,7 +71,7 @@ class Code_Interpreter_Tools implements INode {
         const toolName = nodeData.inputs?.toolName as string
 
         const credentialData = await getCredentialData(nodeData.credential ?? '', options)
-        const e2bApiKey = getCredentialParam('e2bApiKey', credentialData, nodeData)
+        const e2bApiKey = getCredentialParam('e2bApiKey', credentialData, nodeData) || 'local-dummy-key'
 
         return await E2BTool.initialize({
             description: toolDesc ?? DESC,
@@ -204,7 +204,12 @@ export class E2BTool extends StructuredTool {
         flowConfig = { ...this.flowObj, ...flowConfig }
         try {
             if ('input' in arg) {
-                this.instance = await Sandbox.create({ apiKey: this.apiKey })
+                // Create sandbox with local Docker configuration
+                this.instance = await Sandbox.create({ 
+                    apiKey: this.apiKey,
+                    domain: process.env.E2B_DOMAIN || 'localhost:49999',
+                    debug: process.env.E2B_DEBUG === 'true' || true
+                })
                 const execution = await this.instance.runCode(arg?.input, { language: 'python' })
 
                 const artifacts = []
