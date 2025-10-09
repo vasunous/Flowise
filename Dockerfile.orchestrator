@@ -1,0 +1,27 @@
+FROM golang:1.24.7-bookworm AS builder
+
+WORKDIR /build
+
+# Copy the orchestrator source
+COPY ../e2bdev/infra/packages/orchestrator .
+
+# Build the orchestrator
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -o orchestrator .
+
+# Use a minimal base image with necessary tools
+FROM ubuntu:22.04
+
+# Install necessary dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the orchestrator binary
+COPY --from=builder /build/orchestrator /usr/local/bin/orchestrator
+
+# Make it executable
+RUN chmod +x /usr/local/bin/orchestrator
+
+# Set the entrypoint
+ENTRYPOINT ["/usr/local/bin/orchestrator"]
+

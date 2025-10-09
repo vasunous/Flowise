@@ -1,0 +1,81 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: e2b
+      POSTGRES_USER: e2b
+      POSTGRES_PASSWORD: e2b_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U e2b -d e2b"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      CLICKHOUSE_DB: e2b
+      CLICKHOUSE_USER: e2b
+      CLICKHOUSE_PASSWORD: e2b_password
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # E2B Envd Service (using the one we built earlier)
+  envd:
+    image: envd-debug
+    ports:
+      - "8000:8000"
+      - "8001:8001"
+      - "9999:9999"
+      - "2345:2345"
+      - "49983:49983"
+    command: ["/usr/bin/envd", "-isnotfc"]
+    environment:
+      - E2B_ENV=local
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # E2B API Server (simplified local version)
+  e2b-api:
+    image: node:18-alpine
+    working_dir: /app
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=postgresql://e2b:e2b_password@postgres:5432/e2b
+      - CLICKHOUSE_URL=http://clickhouse:8123
+      - ENVD_URL=http://envd:8000
+    volumes:
+      - ./e2b-api:/app
+    command: >
+      sh -c "
+        npm install express cors dotenv axios &&
+        node server.js
+      "
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      envd:
+        condition: service_started
+
+volumes:
+  postgres_data:
+  clickhouse_data:

@@ -1,0 +1,146 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: e2b
+      POSTGRES_USER: e2b
+      POSTGRES_PASSWORD: e2b_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U e2b -d e2b"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - e2b-network
+
+  # ClickHouse Database
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      CLICKHOUSE_DB: e2b
+      CLICKHOUSE_USER: e2b
+      CLICKHOUSE_PASSWORD: e2b_password
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - e2b-network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - e2b-network
+
+  # E2B Envd Service
+  envd:
+    build:
+      context: ../e2bdev/infra/packages/envd
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+      - "8001:8001"
+      - "9999:9999"
+      - "2345:2345"
+      - "49983:49983"
+    command: ["/usr/bin/envd", "-isnotfc"]
+    environment:
+      - E2B_ENV=local
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - e2b-network
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  # E2B Orchestrator Service
+  orchestrator:
+    build:
+      context: ../e2bdev/infra/packages/orchestrator
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+      - "5008:5008"
+    environment:
+      - NODE_ID=linux-orchestrator-1
+      - TEMPLATE_BUCKET_NAME=local-templates
+      - ENVD_TIMEOUT=300s
+      - ORCHESTRATOR_SERVICES=all
+      - GCP_DOCKER_REPOSITORY_NAME=local
+      - GOOGLE_SERVICE_ACCOUNT_BASE64=
+      - OTEL_COLLECTOR_GRPC_ENDPOINT=
+      - MAX_PARALLEL_MEMFILE_SNAPSHOTTING=1
+    command: ["./orchestrator", "--port", "3001"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      envd:
+        condition: service_started
+    networks:
+      - e2b-network
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /dev/kvm:/dev/kvm  # For Firecracker
+
+  # E2B API Server
+  e2b-api:
+    build:
+      context: ../e2bdev/infra/packages/api
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - POSTGRES_CONNECTION_STRING=postgresql://e2b:e2b_password@postgres:5432/e2b?sslmode=disable
+      - CLICKHOUSE_CONNECTION_STRING=http://clickhouse:8123
+      - REDIS_URL=redis://redis:6379
+      - ENVIRONMENT=local
+      - NODE_ID=linux-api-1
+      - ORCHESTRATOR_PORT=5008
+      - LOCAL_CLUSTER_ENDPOINT=orchestrator:3001
+      - LOCAL_CLUSTER_TOKEN=linux-token-123
+      - SANDBOX_ACCESS_TOKEN_HASH_SEED=linux-seed-key-123
+    command: ["./api", "--port", "3000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      orchestrator:
+        condition: service_started
+    networks:
+      - e2b-network
+
+volumes:
+  postgres_data:
+  clickhouse_data:
+  redis_data:
+
+networks:
+  e2b-network:
+    driver: bridge
+

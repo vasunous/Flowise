@@ -10,9 +10,10 @@ async function testE2BFinal() {
     console.log('🔍 Final E2B Test with Correct Configuration\n');
     
     const config = {
-        apiKey: 'local-dummy-key',
-        domain: 'localhost:49999',  // Correct port that SDK expects
-        debug: true
+        // For local development, we can try without API key
+        debug: true,
+        // Try connecting to the local envd container
+        host: 'localhost:8000'
     };
     
    
@@ -40,12 +41,6 @@ console.log(\`5 * 6 = \${result}\`);
         if (error.cause) {
             console.log('Cause:', error.cause);
         }
-        
-        console.log('\n🔧 Troubleshooting:');
-        console.log('1. Make sure E2B container is running on port 49999');
-        console.log('2. Check: docker ps | grep e2b');
-        console.log('3. Check logs: docker logs e2b-local');
-        
         return false;
     }
 }

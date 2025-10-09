@@ -1,0 +1,246 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: e2b
+      POSTGRES_USER: e2b
+      POSTGRES_PASSWORD: e2b_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U e2b -d e2b"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - e2b-network
+
+  # ClickHouse Database
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      CLICKHOUSE_DB: e2b
+      CLICKHOUSE_USER: e2b
+      CLICKHOUSE_PASSWORD: e2b_password
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - e2b-network
+
+  # Redis for caching
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - e2b-network
+
+  # E2B Envd Service (real binary)
+  envd:
+    image: alpine:3.22
+    ports:
+      - "8000:8000"
+      - "8001:8001"
+      - "9999:9999"
+      - "2345:2345"
+      - "49983:49983"
+    environment:
+      - E2B_ENV=local
+      - POSTGRES_CONNECTION_STRING=postgresql://e2b:e2b_password@postgres:5432/e2b?sslmode=disable
+      - CLICKHOUSE_CONNECTION_STRING=http://clickhouse:8123
+      - REDIS_URL=redis:6379
+    volumes:
+      - ../e2bdev/infra/packages/envd/bin/envd:/usr/bin/envd:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: ["/usr/bin/envd", "-isnotfc"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - e2b-network
+    privileged: true
+
+  # E2B Orchestrator Service (real binary)
+  orchestrator:
+    image: ubuntu:22.04
+    ports:
+      - "3001:3001"
+      - "5008:5008"
+    environment:
+      - NODE_ID=local-orchestrator-1
+      - TEMPLATE_BUCKET_NAME=local-templates
+      - ENVD_TIMEOUT=300s
+      - ORCHESTRATOR_SERVICES=all
+      - GCP_DOCKER_REPOSITORY_NAME=local
+      - GOOGLE_SERVICE_ACCOUNT_BASE64=
+      - OTEL_COLLECTOR_GRPC_ENDPOINT=
+      - MAX_PARALLEL_MEMFILE_SNAPSHOTTING=1
+      - POSTGRES_CONNECTION_STRING=postgresql://e2b:e2b_password@postgres:5432/e2b?sslmode=disable
+      - CLICKHOUSE_CONNECTION_STRING=http://clickhouse:8123
+      - REDIS_URL=redis:6379
+      - ENVD_URL=http://envd:8000
+      - CONSUL_TOKEN=local-consul-token-123
+      - NOMAD_TOKEN=local-nomad-token-123
+    volumes:
+      - ../e2bdev/infra/packages/orchestrator/bin/orchestrator:/usr/bin/orchestrator:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: ["/usr/bin/orchestrator", "--port", "3001"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      envd:
+        condition: service_started
+    networks:
+      - e2b-network
+    privileged: true
+
+  # E2B API Server (real binary)
+  e2b-api:
+    image: alpine:3.22
+    ports:
+      - "3000:3000"
+    environment:
+      - POSTGRES_CONNECTION_STRING=postgresql://e2b:e2b_password@postgres:5432/e2b?sslmode=disable
+      - CLICKHOUSE_CONNECTION_STRING=http://clickhouse:8123
+      - REDIS_URL=redis:6379
+      - ENVIRONMENT=local
+      - NODE_ID=local-api-1
+      - ORCHESTRATOR_PORT=5008
+      - LOCAL_CLUSTER_ENDPOINT=orchestrator:3001
+      - LOCAL_CLUSTER_TOKEN=local-token-123
+      - SANDBOX_ACCESS_TOKEN_HASH_SEED=local-seed-key-123
+      - ADMIN_TOKEN=local-admin-token-123
+      - API_PORT=3000
+    volumes:
+      - ../e2bdev/infra/packages/api/bin/api-linux:/usr/bin/api:ro
+    command: ["/usr/bin/api", "--port", "3000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      orchestrator:
+        condition: service_started
+    networks:
+      - e2b-network
+
+  # E2B Client Proxy (real binary)
+  client-proxy:
+    image: alpine:3.22
+    ports:
+      - "3004:3004"
+    environment:
+      - NODE_ID=local-client-proxy-1
+      - ORCHESTRATOR_ENDPOINT=orchestrator:3001
+      - ORCHESTRATOR_TOKEN=local-token-123
+      - PROXY_PORT=3004
+    volumes:
+      - ../e2bdev/infra/packages/client-proxy/bin/client-proxy:/usr/bin/client-proxy:ro
+    command: ["/usr/bin/client-proxy", "--port", "3004"]
+    depends_on:
+      orchestrator:
+        condition: service_started
+    networks:
+      - e2b-network
+
+  # E2B Docker Reverse Proxy (real binary)
+  docker-reverse-proxy:
+    image: alpine:3.22
+    ports:
+      - "3005:3005"
+    environment:
+      - NODE_ID=local-docker-proxy-1
+      - PROXY_PORT=3005
+      - GOOGLE_SERVICE_ACCOUNT_BASE64=
+    volumes:
+      - ../e2bdev/infra/packages/docker-reverse-proxy/bin/docker-reverse-proxy-linux:/usr/bin/docker-reverse-proxy:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: ["/usr/bin/docker-reverse-proxy", "--port", "3005"]
+    networks:
+      - e2b-network
+    privileged: true
+
+  # Database Migration Service
+  db-migrator:
+    image: alpine:3.22
+    environment:
+      - POSTGRES_CONNECTION_STRING=postgresql://e2b:e2b_password@postgres:5432/e2b?sslmode=disable
+      - PGPASSWORD=e2b_password
+    volumes:
+      - ../e2bdev/infra/packages/db/migrations:/migrations:ro
+    command: >
+      sh -c "
+        apk add --no-cache postgresql-client &&
+        echo 'Waiting for database...' &&
+        until pg_isready -h postgres -p 5432 -U e2b; do sleep 1; done &&
+        echo 'Running migrations...' &&
+        for migration in /migrations/*.sql; do
+          echo 'Running migration: $$migration' &&
+          PGPASSWORD=e2b_password psql -h postgres -U e2b -d e2b -f $$migration
+        done &&
+        echo 'Migrations completed'
+      "
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - e2b-network
+
+  # ClickHouse Migration Service
+  clickhouse-migrator:
+    image: alpine:3.22
+    environment:
+      - CLICKHOUSE_CONNECTION_STRING=http://clickhouse:8123
+    volumes:
+      - ../e2bdev/infra/packages/clickhouse/migrations:/migrations:ro
+    command: >
+      sh -c "
+        apk add --no-cache curl &&
+        echo 'Waiting for ClickHouse...' &&
+        until curl -f http://clickhouse:8123/ping; do sleep 1; done &&
+        echo 'Running ClickHouse migrations...' &&
+        for migration in /migrations/*.sql; do
+          echo 'Running migration: $$migration' &&
+          curl -X POST 'http://clickhouse:8123/' --data-binary @$$migration
+        done &&
+        echo 'ClickHouse migrations completed'
+      "
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    networks:
+      - e2b-network
+
+volumes:
+  postgres_data:
+  clickhouse_data:
+  redis_data:
+
+networks:
+  e2b-network:
+    driver: bridge
